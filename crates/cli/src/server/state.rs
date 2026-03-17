@@ -86,21 +86,24 @@ pub fn load_session(
         })
         .with_speculator_config(match speculator {
             Some(speculator) => {
-                let (is_tagged, speculator_str) = if speculator.starts_with("tagged:") {
-                    (true, &speculator[7..])
+                let (spec_type, speculator_str) = if speculator.starts_with("tagged:") {
+                    ("tagged", &speculator[7..])
+                } else if speculator.starts_with("kn:") {
+                    ("kn", &speculator[3..])
                 } else {
-                    (false, speculator.as_str())
+                    ("baseline", speculator.as_str())
                 };
 
-                let (speculator_path, number_of_speculated_tokens) =
-                    speculator_str.split_once(':').unwrap_or((speculator_str, "1"));
+                // Parse path:depth or path:depth:tau
+                let parts: Vec<&str> = speculator_str.splitn(3, ':').collect();
+                let speculator_path = parts[0];
+                let number_of_speculated_tokens: usize = parts.get(1).unwrap_or(&"1").parse().unwrap();
+                let temperature: f32 = parts.get(2).unwrap_or(&"1.0").parse().unwrap();
 
-                let number_of_speculated_tokens = number_of_speculated_tokens.parse().unwrap();
-
-                let speculator: Arc<dyn uzu::speculators::speculator::Speculator> = if is_tagged {
-                    Arc::new(uzu::speculators::tagged_multi_table_speculator::TaggedMultiTableSpeculator::load(speculator_path))
-                } else {
-                    Arc::new(uzu::speculators::ngram_speculator::NGramSpeculator::load(speculator_path))
+                let speculator: Arc<dyn uzu::speculators::speculator::Speculator> = match spec_type {
+                    "tagged" => Arc::new(uzu::speculators::tagged_multi_table_speculator::TaggedMultiTableSpeculator::load(speculator_path).with_temperature(temperature)),
+                    "kn" => Arc::new(uzu::speculators::tagged_multi_table_speculator::KNMultiTableSpeculator::load(speculator_path).with_temperature(temperature)),
+                    _ => Arc::new(uzu::speculators::ngram_speculator::NGramSpeculator::load(speculator_path)),
                 };
 
                 SpeculatorConfig {
