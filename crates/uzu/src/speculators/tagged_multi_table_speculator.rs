@@ -2,7 +2,7 @@ use std::{collections::HashMap, iter::repeat_n, ops::Deref};
 
 use bytemuck::cast_slice;
 use xxhash_rust::xxh3::xxh3_64;
-use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
+use zerocopy::{FromBytes, Immutable, KnownLayout};
 
 use crate::speculators::speculator::Speculator;
 
@@ -14,7 +14,7 @@ fn full_hash(seq: &[u32]) -> u64 {
 }
 
 #[repr(C)]
-#[derive(FromBytes, IntoBytes, KnownLayout, Immutable)]
+#[derive(FromBytes, KnownLayout, Immutable)]
 struct TaggedTableHeader {
     hashtable_size: u32,
     top_k: u32,
@@ -81,30 +81,33 @@ impl TableLayout {
     }
 
     #[inline]
-    fn tags<'a>(
+    fn read_tag(
         &self,
-        bytes: &'a [u8],
-    ) -> &'a [u64] {
-        let len = self.hashtable_size as usize;
-        cast_slice(&bytes[self.tags_start..self.tags_start + 8 * len])
+        bytes: &[u8],
+        idx: usize,
+    ) -> u64 {
+        let off = self.tags_start + idx * 8;
+        u64::from_le_bytes(bytes[off..off + 8].try_into().unwrap())
     }
 
     #[inline]
-    fn keys<'a>(
+    fn read_key(
         &self,
-        bytes: &'a [u8],
-    ) -> &'a [u32] {
-        let len = self.hashtable_size as usize * self.top_k as usize;
-        cast_slice(&bytes[self.keys_start..self.keys_start + 4 * len])
+        bytes: &[u8],
+        idx: usize,
+    ) -> u32 {
+        let off = self.keys_start + idx * 4;
+        u32::from_le_bytes(bytes[off..off + 4].try_into().unwrap())
     }
 
     #[inline]
-    fn values<'a>(
+    fn read_value(
         &self,
-        bytes: &'a [u8],
-    ) -> &'a [f32] {
-        let len = self.hashtable_size as usize * self.top_k as usize;
-        cast_slice(&bytes[self.values_start..self.values_start + 4 * len])
+        bytes: &[u8],
+        idx: usize,
+    ) -> f32 {
+        let off = self.values_start + idx * 4;
+        f32::from_le_bytes(bytes[off..off + 4].try_into().unwrap())
     }
 
     /// Hash context, check tag, return top-k if tag matches.
@@ -127,19 +130,17 @@ impl TableLayout {
         let idx = (hash % self.hashtable_size as u64) as usize;
         let tag = hash / self.hashtable_size as u64;
 
-        if self.tags(bytes)[idx] != tag {
+        if self.read_tag(bytes, idx) != tag {
             return None;
         }
 
         let k = self.top_k as usize;
         let k_start = idx * k;
-        let k_end = k_start + k;
 
-        let keys = self.keys(bytes);
-        let values = self.values(bytes);
-
-        let result: HashMap<u64, f32> =
-            keys[k_start..k_end].iter().copied().map(u64::from).zip(values[k_start..k_end].iter().copied()).collect();
+        let mut result = HashMap::with_capacity(k);
+        for i in 0..k {
+            result.insert(self.read_key(bytes, k_start + i) as u64, self.read_value(bytes, k_start + i));
+        }
 
         Some(result)
     }

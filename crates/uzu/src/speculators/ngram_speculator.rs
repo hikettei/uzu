@@ -5,6 +5,7 @@ use std::{
 };
 
 use bytemuck::cast_slice;
+use metal::MTLRenderPassDepthAttachmentDescriptor;
 use xxhash_rust::xxh3::xxh3_64;
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
 
