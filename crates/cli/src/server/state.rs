@@ -86,12 +86,22 @@ pub fn load_session(
         })
         .with_speculator_config(match speculator {
             Some(speculator) => {
-                let (speculator, number_of_speculated_tokens) =
-                    speculator.split_once(':').unwrap_or((&speculator, "1"));
+                let (is_tagged, speculator_str) = if speculator.starts_with("tagged:") {
+                    (true, &speculator[7..])
+                } else {
+                    (false, speculator.as_str())
+                };
+
+                let (speculator_path, number_of_speculated_tokens) =
+                    speculator_str.split_once(':').unwrap_or((speculator_str, "1"));
 
                 let number_of_speculated_tokens = number_of_speculated_tokens.parse().unwrap();
 
-                let speculator = Arc::new(uzu::speculators::ngram_speculator::NGramSpeculator::load(speculator));
+                let speculator: Arc<dyn uzu::speculators::speculator::Speculator> = if is_tagged {
+                    Arc::new(uzu::speculators::tagged_multi_table_speculator::TaggedMultiTableSpeculator::load(speculator_path))
+                } else {
+                    Arc::new(uzu::speculators::ngram_speculator::NGramSpeculator::load(speculator_path))
+                };
 
                 SpeculatorConfig {
                     number_of_speculated_tokens,
