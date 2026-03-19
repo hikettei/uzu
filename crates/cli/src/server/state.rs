@@ -86,12 +86,24 @@ pub fn load_session(
         })
         .with_speculator_config(match speculator {
             Some(speculator) => {
-                let (speculator, number_of_speculated_tokens) =
-                    speculator.split_once(':').unwrap_or((&speculator, "1"));
+                let (spec_type, speculator_str) = if speculator.starts_with("tagged:") {
+                    ("tagged", &speculator[7..])
+                } else if speculator.starts_with("kn:") {
+                    ("kn", &speculator[3..])
+                } else {
+                    ("baseline", speculator.as_str())
+                };
 
-                let number_of_speculated_tokens = number_of_speculated_tokens.parse().unwrap();
+                let parts: Vec<&str> = speculator_str.splitn(3, ':').collect();
+                let speculator_path = parts[0];
+                let number_of_speculated_tokens: usize = parts.get(1).unwrap_or(&"1").parse().unwrap();
+                let temperature: f32 = parts.get(2).unwrap_or(&"1.0").parse().unwrap();
 
-                let speculator = Arc::new(uzu::speculators::ngram_speculator::NGramSpeculator::load(speculator));
+                let speculator: Arc<dyn uzu::speculators::speculator::Speculator> = match spec_type {
+                    "tagged" => Arc::new(uzu::speculators::tagged_multi_table_speculator::TaggedMultiTableSpeculator::load(speculator_path).with_temperature(temperature)),
+                    "kn" => Arc::new(uzu::speculators::tagged_multi_table_speculator::KNMultiTableSpeculator::load(speculator_path).with_temperature(temperature)),
+                    _ => Arc::new(uzu::speculators::ngram_speculator::NGramSpeculator::load(speculator_path)),
+                };
 
                 SpeculatorConfig {
                     number_of_speculated_tokens,
