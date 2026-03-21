@@ -177,7 +177,7 @@ impl<B: Backend> Attention<B> {
             (0, self.sliding_window_size)
         };
 
-        let use_mask = window_length.is_some();
+        let use_mask = window_length.is_some() || suffix_length > 1;
 
         let sequence_length = segment_prefix_length + suffix_length;
 

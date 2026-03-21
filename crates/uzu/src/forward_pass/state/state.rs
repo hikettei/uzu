@@ -212,13 +212,22 @@ impl<B: Backend> ForwardPassState<B> {
         // Sampling output
         let sampling_output = Some(scratch.sampling_output.view(&[suffix_length]));
 
-        // Attention bias (causal + sliding window)
+        // Attention bias (causal + sliding window + tree ancestry).
+        // Tree mask is only valid when sampling_start == 0 (generate path); during
+        // prefill sampling_start > 0 and init_token_parents stores data at that
+        // offset, leaving indices 0..sampling_start uninitialised.
+        let suffix_parent_indices: Option<Vec<i32>> = if sampling_start == 0 && sampling_length > 1 {
+            Some(token_parents_cell.borrow().as_slice::<i32>()[..suffix_length].to_vec())
+        } else {
+            None
+        };
         let attention_bias = Self::init_llm_attention_bias(
             scratch,
             &cache_layers,
             suffix_length,
             token_positions,
             external_bias_fn,
+            suffix_parent_indices.as_deref(),
             should_fill_attention_bias,
         );
 
@@ -265,14 +274,22 @@ impl<B: Backend> ForwardPassState<B> {
         suffix_length: usize,
         token_positions: &[usize],
         external_bias_fn: Option<&dyn Fn(usize, usize) -> bool>,
+        suffix_parent_indices: Option<&[i32]>,
         should_fill_attention_bias: bool,
     ) -> HashMap<Option<usize>, ArrayCell<B>> {
         let cache_ref = cache_layers.borrow();
+        // Use the current prefix_len (not max) so the bias matrix stride matches
+        // what the kernel reads via sequence_length = prefix_len + suffix_length.
+        let current_full_prefix_len = cache_ref.data.iter()
+            .filter_map(|l| l.as_transformer())
+            .find(|l| l.window_length().is_none())
+            .map(|l| l.prefix_segment_length())
+            .unwrap_or(cache_ref.max_prefix_length());
         let mut attention_bias_map: HashMap<Option<usize>, Array<B>> = scratch
             .attention_window_size_to_bias
             .iter()
             .map(|(window_size, buffer)| {
-                let prefix_length = window_size.unwrap_or(cache_ref.max_prefix_length());
+                let prefix_length = window_size.unwrap_or(current_full_prefix_len);
                 let attention_bias_shape = [suffix_length, suffix_length + prefix_length];
                 let array = buffer.borrow().view(&attention_bias_shape);
                 (*window_size, array)
@@ -289,6 +306,7 @@ impl<B: Backend> ForwardPassState<B> {
                 token_positions,
                 suffix_length,
                 external_bias_fn,
+                suffix_parent_indices,
             );
         }
 
@@ -450,6 +468,7 @@ impl<B: Backend> ForwardPassState<B> {
     pub fn context(&self) -> &B::Context {
         self.context.as_ref()
     }
+
 
     pub fn aux_buffers_suffix_length(&self) -> usize {
         self.common_aux.suffix_length

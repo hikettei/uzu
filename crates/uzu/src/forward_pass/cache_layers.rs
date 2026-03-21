@@ -246,11 +246,12 @@ impl<B: Backend> CacheLayers<B> {
         suffix_token_positions: &[usize],
         suffix_length: usize,
         external_bias_fn: Option<&dyn Fn(usize, usize) -> bool>,
+        suffix_parent_indices: Option<&[i32]>,
     ) {
         for layer in self.data.iter() {
             if let CacheLayer::Transformer(layer) = layer {
                 if let Some(array) = dst.get_mut(&layer.window_length()) {
-                    layer.fill_attention_bias(array, suffix_token_positions, suffix_length, external_bias_fn);
+                    layer.fill_attention_bias(array, suffix_token_positions, suffix_length, external_bias_fn, suffix_parent_indices);
                 }
             }
         }
@@ -266,7 +267,7 @@ impl<B: Backend> CacheLayers<B> {
         for layer in self.data.iter() {
             if let CacheLayer::Transformer(layer) = layer {
                 if let Some(cell) = dst.get(&layer.window_length()) {
-                    layer.fill_attention_bias(&mut cell.borrow_mut(), suffix_token_positions, suffix_length, None);
+                    layer.fill_attention_bias(&mut cell.borrow_mut(), suffix_token_positions, suffix_length, None, None);
                 }
             }
         }

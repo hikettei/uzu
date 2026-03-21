@@ -7,6 +7,22 @@ use crate::{
     utils::attention::fill_attention_bias,
 };
 
+/// Walk parent pointers from `child_idx` upward; return true iff `ancestor_idx`
+/// lies on the path (including the trivial child == ancestor case).
+fn is_suffix_ancestor(child_idx: usize, ancestor_idx: usize, parents: &[i32]) -> bool {
+    let mut cur = child_idx;
+    loop {
+        if cur == ancestor_idx {
+            return true;
+        }
+        let parent = parents[cur];
+        if parent < 0 {
+            return false;
+        }
+        cur = parent as usize;
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct AttentionBiasUpdate {
     pub key: Option<usize>,
@@ -107,13 +123,14 @@ impl<B: Backend> KVCacheLayer<B> {
         suffix_token_positions: &[usize],
         suffix_length: usize,
         external_bias_fn: Option<&dyn Fn(usize, usize) -> bool>,
+        suffix_parent_indices: Option<&[i32]>,
     ) {
         let prefix_segment_length = self.prefix_segment_length();
         fill_attention_bias(dst, suffix_length, prefix_segment_length, |row_index, column_index| {
             if let Some(bias_fn) = external_bias_fn {
                 bias_fn(row_index, column_index)
             } else {
-                self.bias_should_be_neg_inf(row_index, column_index, suffix_token_positions)
+                self.bias_should_be_neg_inf(row_index, column_index, suffix_token_positions, suffix_parent_indices)
             }
         });
     }
@@ -123,14 +140,18 @@ impl<B: Backend> KVCacheLayer<B> {
         row_index: usize,
         column_index: usize,
         suffix_token_positions: &[usize],
+        suffix_parent_indices: Option<&[i32]>,
     ) -> bool {
         let query_position = suffix_token_positions[row_index];
         if query_position == INVALID_POSITION {
             return true;
         }
 
-        let key_position = if column_index >= self.prefix_segment_length() {
-            suffix_token_positions[column_index - self.prefix_segment_length()]
+        let prefix_segment_length = self.prefix_segment_length();
+        let is_suffix_column = column_index >= prefix_segment_length;
+
+        let key_position = if is_suffix_column {
+            suffix_token_positions[column_index - prefix_segment_length]
         } else {
             match &self.state {
                 KVCacheLayerState::Full {
@@ -144,6 +165,22 @@ impl<B: Backend> KVCacheLayer<B> {
 
         if key_position == INVALID_POSITION {
             return true;
+        }
+
+        // Suffix-suffix with tree structure: ancestry replaces position-based causality.
+        if is_suffix_column {
+            if let Some(parents) = suffix_parent_indices {
+                let suffix_col = column_index - prefix_segment_length;
+                if !is_suffix_ancestor(row_index, suffix_col, parents) {
+                    return true;
+                }
+                return match &self.state {
+                    KVCacheLayerState::Windowed { window_length, .. } => {
+                        query_position >= key_position + window_length
+                    }
+                    _ => false,
+                };
+            }
         }
 
         if query_position < key_position {
