@@ -213,11 +213,33 @@ impl<B: Backend> ForwardPassState<B> {
         let sampling_output = Some(scratch.sampling_output.view(&[suffix_length]));
 
         // Attention bias (causal + sliding window + tree ancestry).
-        // Tree mask is only valid when sampling_start == 0 (generate path); during
-        // prefill sampling_start > 0 and init_token_parents stores data at that
-        // offset, leaving indices 0..sampling_start uninitialised.
-        let suffix_parent_indices: Option<Vec<i32>> = if sampling_start == 0 && sampling_length > 1 {
-            Some(token_parents_cell.borrow().as_slice::<i32>()[..suffix_length].to_vec())
+        // Build a full parent-index array over the entire suffix in absolute indices:
+        //   - Pre-sampling tokens (0..sampling_start): linear chain (≡ causal mask)
+        //   - Sampling region: tree parents from init_token_parents, converted to
+        //     absolute suffix indices.  The sampling root is linked to the last
+        //     pre-sampling token so that ancestry walks cross the boundary correctly.
+        //   - Post-sampling padding: INVALID_POSITION triggers early-return before
+        //     the ancestry check, so parent values don't matter (left as -1).
+        let suffix_parent_indices: Option<Vec<i32>> = if sampling_length > 1 {
+            let raw_parents = token_parents_cell.borrow();
+            let raw = raw_parents.as_slice::<i32>();
+            let mut parents = vec![-1i32; suffix_length];
+            for i in 1..sampling_start.min(suffix_length) {
+                parents[i] = (i - 1) as i32;
+            }
+            for local_idx in 0..sampling_length {
+                let abs_idx = sampling_start + local_idx;
+                if abs_idx >= suffix_length { break; }
+                let parent_local = raw[abs_idx];
+                parents[abs_idx] = if parent_local >= 0 {
+                    sampling_start as i32 + parent_local
+                } else if sampling_start > 0 {
+                    sampling_start as i32 - 1
+                } else {
+                    -1
+                };
+            }
+            Some(parents)
         } else {
             None
         };
